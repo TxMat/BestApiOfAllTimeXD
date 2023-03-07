@@ -3,7 +3,7 @@ import json
 import peewee
 import requests
 from flask import Flask, request, redirect, url_for
-from playhouse.shortcuts import dict_to_model
+from playhouse.shortcuts import dict_to_model, model_to_dict
 
 import errors
 
@@ -128,77 +128,69 @@ def order_id_handler(order_id):
 
         # get order info
         order = order.get()
-        order = order.__dict__['__data__']
+        order_dict = order.__dict__['__data__']
 
         # get product info from order.product_id
-        product = OrderProduct.select(OrderProduct.product, OrderProduct.quantity).where(
-            OrderProduct.order == order["id"])
+        order_product: OrderProduct = OrderProduct.select(OrderProduct.product, OrderProduct.quantity).where(
+            OrderProduct.order == order)
 
-        if product.count() == 0:
+        if order_product.count() == 0:
             return "how", 400
 
+        order_product = order_product.get()
+
         # add product info to order
-        order["product"] = {
-            "id": product.get().product.id,
-            "quantity": product.get().quantity
+        order_dict["product"] = {
+            "id": order_product.product.id,
+            "quantity": order_product.quantity
         }
 
-        # delete product_id from order
-        del order["product_id"]
-
         # price is calculated from product price and quantity
-        order["total_price"] = order["product"]["quantity"] * product.get().product.price
+        order_dict["total_price"] = order_product.quantity * order_product.product.price
 
         # shipping price is calculated from product weight and quantity
-        price = order["product"]["quantity"] * product.get().product.weight
-        match price:
+        weight = order_product.quantity * order_product.product.weight
+        match weight:
             case x if x < 500:
-                order["shipping_price"] = 5
+                order_dict["shipping_price"] = 5
             case x if x < 2000:
-                order["shipping_price"] = 10
+                order_dict["shipping_price"] = 10
             case _:
-                order["shipping_price"] = 25
+                order_dict["shipping_price"] = 25
 
         # get shipping info from order.shipping_info_id
+        xd = None
         try:
-            order["shipping_info"] = \
-                ShippingInfo.select().where(ShippingInfo.id == order["shipping_info_id"]).get().__dict__[
-                    '__data__']
+            order_dict["shipping_info"] = model_to_dict(
+                ShippingInfo.select().where(ShippingInfo.id == order.shipping_info.id).get())
         except ShippingInfo.DoesNotExist:
-            order["shipping_info"] = {}
-
-        del order["shipping_info_id"]
+            order_dict["shipping_info"] = {}
 
         # get credit card from order.credit_card_id
         try:
-            order["credit_card"] = CreditCard.select().where(CreditCard.id == order["credit_card_id"]).get().__dict__[
-                '__data__']
+            order_dict["credit_card"] = model_to_dict(CreditCard.select().where(CreditCard.id == order.credit_card.id).get())
         except CreditCard.DoesNotExist:
-            order["credit_card"] = {}
-
-        del order["credit_card_id"]
+            order_dict["credit_card"] = {}
 
         # get transaction from order.transaction_id
         try:
-            order["transaction"] = Transaction.select().where(Transaction.id == order["transaction_id"]).get().__dict__[
-                '__data__']
+            order_dict["transaction"] = model_to_dict(
+                Transaction.select().where(Transaction.id == order.transaction.id).get())
         except Transaction.DoesNotExist:
-            order["transaction"] = {}
+            order_dict["transaction"] = {}
 
-        del order["transaction_id"]
-
-        return json.dumps({"order": order})
+        return json.dumps({"order": order_dict})
 
     def put_order():
         # check if order exists
         try:
-            order = Order.select().where(Order.id == order_id)
+            order = Order.select().where(Order.id == order_id).get()
         except Order.DoesNotExist:
             return "Order does not exist", 400
 
         # check payload
         try:
-            payload = request.json
+            payload = request.json["order"]
         except json.JSONDecodeError:
             return "Payload is not a valid json", 400
 
@@ -222,6 +214,8 @@ def order_id_handler(order_id):
                 shipping_info = ShippingInfo.create(**shipping_info)
                 order.shipping_info = shipping_info.id
                 order.save()
+            finally:
+                return "wtf", 200
 
         else:
             return errors.error_handler("orders", "missing-fields",
