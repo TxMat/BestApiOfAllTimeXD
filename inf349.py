@@ -66,6 +66,7 @@ class Order(BaseModel):
     transaction = peewee.ForeignKeyField(Transaction, backref='transaction', null=True)
 
 
+# m2m table
 class OrderProduct(BaseModel):
     order = peewee.ForeignKeyField(Order, backref='order')
     product = peewee.ForeignKeyField(Product, backref='product')
