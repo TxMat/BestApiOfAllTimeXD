@@ -44,7 +44,7 @@ class ShippingInfo(BaseModel):
 class Transaction(BaseModel):
     id = peewee.CharField(max_length=255, primary_key=True, unique=True)
     success = peewee.BooleanField(null=False, default=False)
-    amount = peewee.FloatField(null=False, constraints=[peewee.Check('amount >= 0')])
+    amount_charged = peewee.FloatField(null=False, constraints=[peewee.Check('amount_charged >= 0')])
 
 
 class CreditCard(BaseModel):
@@ -81,35 +81,37 @@ def display_products():
 @app.route('/order', methods=['POST'])
 def post_order():
     try:
-        product = request.json.get('product')
+        payload = request.json.get('product')
     except json.JSONDecodeError:
         return errors.error_handler("order", "json-not-valid", "Le json n\'est pas au bon format"), 422
 
-    if product is None:
+    if payload is None:
         return errors.error_handler("products", "missing-fields",
                                     "La creation d'une commande necessite un produit"), 422
 
     # check if product exists
-    if Product.select().where(Product.id == product["id"]).count() == 0:
+    if Product.select().where(Product.id == payload["id"]).count() == 0:
         return errors.error_handler("order", "product-does-not-exist", "Le produit n\'existe pas"), 404
 
     # check if product is in stock
-    if Product.select().where(Product.id == product["id"], Product.in_stock).count() == 0:
+    if Product.select().where(Product.id == payload["id"], Product.in_stock).count() == 0:
         return errors.error_handler("products", "out-of-inventory", "Le produit demandé n'est pas en inventaire"), 422
 
     # check if quantity is valid
-    if product["quantity"] < 1:
+    if payload["quantity"] < 1:
         return errors.error_handler("order", "invalid-quantity", "La quantité ne peut pas être inférieure à 1"), 422
+
+    product: Product = Product.get(Product.id == payload["id"])
 
     # create order
     try:
-        new_order = Order.create(product_id=product["id"])
+        new_order = Order.create(product_id=payload["id"], total_price=product.price * payload["quantity"])
     except peewee.IntegrityError as e:
         print(e)
         return errors.error_handler("order", "invalid-fields", "Les champs sont mal remplis"), 422
 
     try:
-        OrderProduct.create(order_id=new_order.id, product_id=product["id"], quantity=product["quantity"])
+        OrderProduct.create(order_id=new_order.id, product_id=payload["id"], quantity=payload["quantity"])
     except peewee.IntegrityError as e:
         print(e)
         return errors.error_handler("order", "invalid-fields", "Les champs sont mal remplis"), 422
@@ -120,6 +122,14 @@ def post_order():
 
 @app.route('/order/<int:order_id>', methods=['GET', 'PUT'])
 def order_id_handler(order_id):
+    def calculate_shipping_price(weight):
+        if weight < 500:
+            return 5
+        elif weight < 2000:
+            return 10
+        else:
+            return 25
+
     def get_order():
         # Check if order exists
         try:
@@ -140,17 +150,13 @@ def order_id_handler(order_id):
             "quantity": order_product.quantity
         }
 
-        # Price is calculated from product price and quantity
-        order_dict["total_price"] = order_product.quantity * order_product.product.price
+        # Add total price to order
+        order_dict["total_price"] = order_product.product.price * order_product.quantity
 
         # Shipping price is calculated from product weight and quantity
         weight = order_product.quantity * order_product.product.weight
-        if weight < 500:
-            order_dict["shipping_price"] = 5
-        elif weight < 2000:
-            order_dict["shipping_price"] = 10
-        else:
-            order_dict["shipping_price"] = 25
+
+        order_dict["shipping_price"] = calculate_shipping_price(weight)
 
         # Get shipping info from order.shipping_info_id
         try:
@@ -173,6 +179,72 @@ def order_id_handler(order_id):
         return jsonify({"order": order_dict})
 
     def put_order():
+
+        def update_shipping_order(data):
+            if not all(key in data for key in ("shipping_information", "email")):
+                raise ValueError
+            shipping_info = data["shipping_information"]
+            if not all(key in shipping_info for key in ("address", "city", "province", "postal_code", "country")):
+                return errors.error_handler("order", "missing-fields", "Il manque des champs dans le json"), 422
+            try:
+                # Check if shipping info exists
+                shipping_info_instance = ShippingInfo.get(ShippingInfo.id == order.shipping_info.id)
+                shipping_info_instance.update(**shipping_info).execute()
+            except (ShippingInfo.DoesNotExist, AttributeError):
+                # Create new shipping info instance
+                shipping_info_instance = ShippingInfo.create(**shipping_info)
+                order.shipping_info = shipping_info_instance.id
+            except peewee.IntegrityError as e:
+                print(e)
+                return errors.error_handler("orders", "invalid-fields",
+                                            "Les informations d'achat ne sont pas correctes"), 400
+
+            # Update order email and save
+            order.email = data["email"]
+            order.save()
+
+            return get_order()
+
+        def update_credit_card(data):
+            if order.paid:
+                return errors.error_handler("order", "already-paid", "La commande a deja ete payé"), 422
+
+            if not all(key in data for key in ("name", "number", "expiration_year", "cvv", "expiration_month")):
+                return errors.error_handler("credit-card", "missing-fields", "Il manque des champs dans le json"), 422
+
+            if order.email is None or order.shipping_info is None:
+                return errors.error_handler("order", "missing-fields",
+                                            "Les informations du client sont nécessaire avant"
+                                            " d'appliquer une carte de crédit"), 422
+
+            if not (data["number"] == "4000 0000 0000 0002" or data["number"] == "4242 4242 4242 4242"):
+                return errors.error_handler("credit-card", "incorrect-number", "Le numéro de carte est invalide"), 422
+
+            try:
+                order_product = OrderProduct.get(OrderProduct.order == order)
+            except OrderProduct.DoesNotExist:
+                return errors.error_handler("order", "order-does-not-exist", "L'order n'existe pas"), 404
+
+            pay_payload = {
+                "credit_card": {**data},
+                "amount_charged": order_product.product.price * order_product.quantity + calculate_shipping_price(
+                    order_product.product.weight * order_product.quantity),
+            }
+
+            # Send payment request
+            response = requests.post("http://dimprojetu.uqac.ca/~jgnault/shops/pay/", json=pay_payload)
+
+            if response.status_code == 200:
+                # Create transaction
+                transaction = Transaction.create(**response.json()["transaction"])
+                order.transaction = transaction.id
+                order.paid = True
+                order.save()
+            else:
+                return response.json(), response.status_code
+
+            return get_order()
+
         try:
             # Check if order exists
             order = Order.get(Order.id == order_id)
@@ -181,31 +253,13 @@ def order_id_handler(order_id):
 
         try:
             # Check payload
-            payload = request.json["order"]
-            if not all(key in payload for key in ("shipping_information", "email")):
-                raise ValueError
+            payload = request.json
+            if "order" in payload:
+                return update_shipping_order(payload["order"])
+            elif "credit_card" in payload:
+                return update_credit_card(payload["credit_card"])
         except (json.JSONDecodeError, ValueError):
             return errors.error_handler("order", "json-not-valid", "Le json n'est pas au bon format"), 422
-
-        try:
-            # Check if shipping info exists
-            shipping_info = payload["shipping_information"]
-            shipping_info_instance = ShippingInfo.get(ShippingInfo.id == order.shipping_info.id)
-            shipping_info_instance.update(**shipping_info).execute()
-        except ShippingInfo.DoesNotExist:
-            # Create new shipping info instance
-            shipping_info_instance = ShippingInfo.create(**shipping_info)
-            order.shipping_info = shipping_info_instance.id
-        except peewee.IntegrityError as e:
-            print(e)
-            return errors.error_handler("orders", "invalid-fields",
-                                        "Les informations d'achat ne sont pas correctes"), 400
-
-        # Update order email and save
-        order.email = payload["email"]
-        order.save()
-
-        return get_order()
 
     if request.method == 'GET':
         return get_order()
