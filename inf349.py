@@ -284,8 +284,9 @@ def populate_database():
                 print("Error: " + str(e))
 
 
-if __name__ == '__main__':
+@app.cli.command("init-db")
+def init_db():
     db.connect()
+    db.drop_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     db.create_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     populate_database()
-    app.run()
