@@ -58,17 +58,17 @@ class CreditCard(BaseModel):
 
 class Order(BaseModel):
     id = peewee.IntegerField(primary_key=True, unique=True)
-    shipping_info_id = peewee.ForeignKeyField(ShippingInfo, backref='shipping_info', null=True)
-    product_id = peewee.ForeignKeyField(Product, backref='product')
+    shipping_info = peewee.ForeignKeyField(ShippingInfo, backref='shipping_info', null=True)
+    product = peewee.ForeignKeyField(Product, backref='product')
     email = peewee.CharField(max_length=255, constraints=[peewee.Check('email LIKE "%@%.%"')], null=True)
     paid = peewee.BooleanField(null=False, default=False)
-    credit_card_id = peewee.ForeignKeyField(CreditCard, backref='credit_card', null=True)
-    transaction_id = peewee.ForeignKeyField(Transaction, backref='transaction', null=True)
+    credit_card = peewee.ForeignKeyField(CreditCard, backref='credit_card', null=True)
+    transaction = peewee.ForeignKeyField(Transaction, backref='transaction', null=True)
 
 
 class OrderProduct(BaseModel):
-    order_id = peewee.ForeignKeyField(Order, backref='order')
-    product_id = peewee.ForeignKeyField(Product, backref='product')
+    order = peewee.ForeignKeyField(Order, backref='order')
+    product = peewee.ForeignKeyField(Product, backref='product')
     quantity = peewee.IntegerField(null=False, constraints=[peewee.Check('quantity >= 1')])
 
 
@@ -79,7 +79,7 @@ def display_products():
 
 
 @app.route('/order', methods=['POST'])
-def order():
+def post_order():
     try:
         product = request.json.get('product')
     except json.JSONDecodeError:
@@ -115,77 +115,122 @@ def order():
         return "Invalid order", 400
 
     # redirect to order/<id> page after creation
-    return redirect(url_for('get_order', order_id=new_order.id))
+    return redirect(url_for('order_id_handler', order_id=new_order.id))
 
 
-@app.route('/order/<int:order_id>', methods=['GET'])
-def get_order(order_id):
-    # check if order exists
-    ordr = Order.select().where(Order.id == order_id)
-    if ordr.count() == 0:
-        return "Order does not exist", 400
+@app.route('/order/<int:order_id>', methods=['GET', 'PUT'])
+def order_id_handler(order_id):
+    def get_order():
+        # check if order exists
+        order = Order.select().where(Order.id == order_id)
+        if order.count() == 0:
+            return "Order does not exist", 400
 
-    # get order info
-    ordr = ordr.get()
-    ordr = ordr.__dict__['__data__']
+        # get order info
+        order = order.get()
+        order = order.__dict__['__data__']
 
-    # get product info from order.product_id
-    product = OrderProduct.select(OrderProduct.product_id, OrderProduct.quantity).where(
-        OrderProduct.order_id == ordr["id"])
+        # get product info from order.product_id
+        product = OrderProduct.select(OrderProduct.product, OrderProduct.quantity).where(
+            OrderProduct.order == order["id"])
 
-    if product.count() == 0:
-        return "how", 400
+        if product.count() == 0:
+            return "how", 400
 
-    # add product info to order
-    ordr["product"] = {
-        "id": product.get().product_id.id,
-        "quantity": product.get().quantity
-    }
+        # add product info to order
+        order["product"] = {
+            "id": product.get().product.id,
+            "quantity": product.get().quantity
+        }
 
-    # delete product_id from order
-    del ordr["product_id"]
+        # delete product_id from order
+        del order["product_id"]
 
-    # price is calculated from product price and quantity
-    ordr["total_price"] = ordr["product"]["quantity"] * product.get().product_id.price
+        # price is calculated from product price and quantity
+        order["total_price"] = order["product"]["quantity"] * product.get().product.price
 
-    # shipping price is calculated from product weight and quantity
-    price = ordr["product"]["quantity"] * product.get().product_id.weight
-    match price:
-        case x if x < 500:
-            ordr["shipping_price"] = 5
-        case x if x < 2000:
-            ordr["shipping_price"] = 10
-        case _:
-            ordr["shipping_price"] = 25
+        # shipping price is calculated from product weight and quantity
+        price = order["product"]["quantity"] * product.get().product.weight
+        match price:
+            case x if x < 500:
+                order["shipping_price"] = 5
+            case x if x < 2000:
+                order["shipping_price"] = 10
+            case _:
+                order["shipping_price"] = 25
 
-    # get shipping info from order.shipping_info_id
-    try:
-        ordr["shipping_info"] = ShippingInfo.select().where(ShippingInfo.id == ordr["shipping_info_id"]).get().__dict__[
-            '__data__']
-    except ShippingInfo.DoesNotExist:
-        ordr["shipping_info"] = {}
+        # get shipping info from order.shipping_info_id
+        try:
+            order["shipping_info"] = \
+                ShippingInfo.select().where(ShippingInfo.id == order["shipping_info_id"]).get().__dict__[
+                    '__data__']
+        except ShippingInfo.DoesNotExist:
+            order["shipping_info"] = {}
 
-    del ordr["shipping_info_id"]
+        del order["shipping_info_id"]
 
-    # get credit card from order.credit_card_id
-    try:
-        ordr["credit_card"] = CreditCard.select().where(CreditCard.id == ordr["credit_card_id"]).get().__dict__[
-            '__data__']
-    except CreditCard.DoesNotExist:
-        ordr["credit_card"] = {}
+        # get credit card from order.credit_card_id
+        try:
+            order["credit_card"] = CreditCard.select().where(CreditCard.id == order["credit_card_id"]).get().__dict__[
+                '__data__']
+        except CreditCard.DoesNotExist:
+            order["credit_card"] = {}
 
-    del ordr["credit_card_id"]
+        del order["credit_card_id"]
 
-    # get transaction from order.transaction_id
-    try:
-        ordr["transaction"] = Transaction.select().where(Transaction.id == ordr["transaction_id"]).get().__dict__[
-            '__data__']
-    except Transaction.DoesNotExist:
-        ordr["transaction"] = {}
+        # get transaction from order.transaction_id
+        try:
+            order["transaction"] = Transaction.select().where(Transaction.id == order["transaction_id"]).get().__dict__[
+                '__data__']
+        except Transaction.DoesNotExist:
+            order["transaction"] = {}
 
-    del ordr["transaction_id"]
+        del order["transaction_id"]
 
-    return json.dumps({"order": ordr})
+        return json.dumps({"order": order})
+
+    def put_order():
+        # check if order exists
+        try:
+            order = Order.select().where(Order.id == order_id)
+        except Order.DoesNotExist:
+            return "Order does not exist", 400
+
+        # check payload
+        try:
+            payload = request.json
+        except json.JSONDecodeError:
+            return "Payload is not a valid json", 400
+
+        if payload is None:
+            return errors.error_handler("orders", "missing-fields",
+                                        "La modification d'une commande necessite un payload"), 422
+
+        # check if shipping info exists in order
+        if "shipping_information" in payload:
+            shipping_info = payload["shipping_information"]
+
+            # check if shipping info exists
+            try:
+                shipping_info = ShippingInfo.select().where(ShippingInfo.id == order.shipping_info.id).get()
+                try:
+                    shipping_info.update(**shipping_info).execute()
+                except peewee.IntegrityError as e:
+                    print(e)
+                    return "Invalid shipping info", 400
+            except ShippingInfo.DoesNotExist:
+                shipping_info = ShippingInfo.create(**shipping_info)
+                order.shipping_info = shipping_info.id
+                order.save()
+
+        else:
+            return errors.error_handler("orders", "missing-fields",
+                                        "La modification d'une commande necessite un payload"), 422
+
+    if request.method == 'GET':
+        return get_order()
+    elif request.method == 'PUT':
+        return put_order()
 
 
 def populate_database():
