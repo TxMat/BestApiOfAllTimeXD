@@ -2,7 +2,7 @@ import json
 
 import peewee
 import requests
-from flask import Flask, request
+from flask import Flask, request, redirect, url_for
 from playhouse.shortcuts import dict_to_model
 
 import errors
@@ -114,7 +114,8 @@ def order():
         print(e)
         return "Invalid order", 400
 
-    return "Order created", 200
+    # redirect to order/<id> page after creation
+    return redirect(url_for('get_order', order_id=new_order.id))
 
 
 @app.route('/order/<int:order_id>', methods=['GET'])
