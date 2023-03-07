@@ -163,20 +163,20 @@ def order_id_handler(order_id):
         try:
             order_dict["shipping_info"] = model_to_dict(
                 ShippingInfo.select().where(ShippingInfo.id == order.shipping_info.id).get())
-        except ShippingInfo.DoesNotExist:
+        except (CreditCard.DoesNotExist, AttributeError):
             order_dict["shipping_info"] = {}
 
         # get credit card from order.credit_card_id
         try:
             order_dict["credit_card"] = model_to_dict(CreditCard.select().where(CreditCard.id == order.credit_card.id).get())
-        except CreditCard.DoesNotExist:
+        except (CreditCard.DoesNotExist, AttributeError):
             order_dict["credit_card"] = {}
 
         # get transaction from order.transaction_id
         try:
             order_dict["transaction"] = model_to_dict(
                 Transaction.select().where(Transaction.id == order.transaction.id).get())
-        except Transaction.DoesNotExist:
+        except (CreditCard.DoesNotExist, AttributeError):
             order_dict["transaction"] = {}
 
         return json.dumps({"order": order_dict})
@@ -194,32 +194,29 @@ def order_id_handler(order_id):
         except json.JSONDecodeError:
             return "Payload is not a valid json", 400
 
-        if payload is None:
+        if payload is None or "shipping_information" not in payload or "email" not in payload:
             return errors.error_handler("orders", "missing-fields",
                                         "La modification d'une commande necessite un payload"), 422
 
         # check if shipping info exists in order
-        if "shipping_information" in payload:
-            shipping_info = payload["shipping_information"]
 
-            # check if shipping info exists
+        shipping_info = payload["shipping_information"]
+
+        # check if shipping info exists
+        try:
+            shipping_info = ShippingInfo.select().where(ShippingInfo.id == order.shipping_info.id).get()
             try:
-                shipping_info = ShippingInfo.select().where(ShippingInfo.id == order.shipping_info.id).get()
-                try:
-                    shipping_info.update(**shipping_info).execute()
-                except peewee.IntegrityError as e:
-                    print(e)
-                    return "Invalid shipping info", 400
-            except ShippingInfo.DoesNotExist:
-                shipping_info = ShippingInfo.create(**shipping_info)
-                order.shipping_info = shipping_info.id
-                order.save()
-            finally:
-                return "wtf", 200
-
-        else:
-            return errors.error_handler("orders", "missing-fields",
-                                        "La modification d'une commande necessite un payload"), 422
+                shipping_info.update(**shipping_info).execute()
+            except peewee.IntegrityError as e:
+                print(e)
+                return "Invalid shipping info", 400
+        except ShippingInfo.DoesNotExist:
+            shipping_info = ShippingInfo.create(**shipping_info)
+            order.shipping_info = shipping_info.id
+        finally:
+            order.email = payload["email"]
+            order.save()
+            return get_order()
 
     if request.method == 'GET':
         return get_order()
