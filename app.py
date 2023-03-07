@@ -120,51 +120,72 @@ def order():
 
 @app.route('/order/<int:order_id>', methods=['GET'])
 def get_order(order_id):
-    odr = Order.select().where(Order.id == order_id)
-    if odr.count() == 0:
+    # check if order exists
+    ordr = Order.select().where(Order.id == order_id)
+    if ordr.count() == 0:
         return "Order does not exist", 400
 
-    odr = odr.get()
-    odr = odr.__dict__['__data__']
+    # get order info
+    ordr = ordr.get()
+    ordr = ordr.__dict__['__data__']
 
+    # get product info from order.product_id
     product = OrderProduct.select(OrderProduct.product_id, OrderProduct.quantity).where(
-        OrderProduct.order_id == odr["id"])
+        OrderProduct.order_id == ordr["id"])
 
-    odr["product"] = {
+    if product.count() == 0:
+        return "how", 400
+
+    # add product info to order
+    ordr["product"] = {
         "id": product.get().product_id.id,
         "quantity": product.get().quantity
     }
 
-    del odr["product_id"]
+    # delete product_id from order
+    del ordr["product_id"]
+
+    # price is calculated from product price and quantity
+    ordr["total_price"] = ordr["product"]["quantity"] * product.get().product_id.price
+
+    # shipping price is calculated from product weight and quantity
+    price = ordr["product"]["quantity"] * product.get().product_id.weight
+    match price:
+        case x if x < 500:
+            ordr["shipping_price"] = 5
+        case x if x < 2000:
+            ordr["shipping_price"] = 10
+        case _:
+            ordr["shipping_price"] = 25
 
     # get shipping info from order.shipping_info_id
     try:
-        odr["shipping_info"] = ShippingInfo.select().where(ShippingInfo.id == odr["shipping_info_id"]).get().__dict__[
+        ordr["shipping_info"] = ShippingInfo.select().where(ShippingInfo.id == ordr["shipping_info_id"]).get().__dict__[
             '__data__']
     except ShippingInfo.DoesNotExist:
-        odr["shipping_info"] = {}
+        ordr["shipping_info"] = {}
 
-    del odr["shipping_info_id"]
+    del ordr["shipping_info_id"]
 
     # get credit card from order.credit_card_id
     try:
-        odr["credit_card"] = CreditCard.select().where(CreditCard.id == odr["credit_card_id"]).get().__dict__[
+        ordr["credit_card"] = CreditCard.select().where(CreditCard.id == ordr["credit_card_id"]).get().__dict__[
             '__data__']
     except CreditCard.DoesNotExist:
-        odr["credit_card"] = {}
+        ordr["credit_card"] = {}
 
-    del odr["credit_card_id"]
+    del ordr["credit_card_id"]
 
     # get transaction from order.transaction_id
     try:
-        odr["transaction"] = Transaction.select().where(Transaction.id == odr["transaction_id"]).get().__dict__[
+        ordr["transaction"] = Transaction.select().where(Transaction.id == ordr["transaction_id"]).get().__dict__[
             '__data__']
     except Transaction.DoesNotExist:
-        odr["transaction"] = {}
+        ordr["transaction"] = {}
 
-    del odr["transaction_id"]
+    del ordr["transaction_id"]
 
-    return json.dumps(odr)
+    return json.dumps({"order": ordr})
 
 
 def populate_database():
