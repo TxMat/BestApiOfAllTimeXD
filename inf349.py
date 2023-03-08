@@ -85,7 +85,7 @@ def display_products():
 def post_order():
     try:
         payload = request.json.get('product')
-    except json.JSONDecodeError:
+    except AttributeError:
         return errors.error_handler("order", "json-not-valid", "Le json n\'est pas au bon format"), 422
 
     if not payload:
@@ -94,6 +94,10 @@ def post_order():
 
     product_id = payload.get('id')
     quantity = payload.get('quantity')
+
+    if not product_id or not quantity:
+        return errors.error_handler("products", "missing-fields",
+                                    "La création d'une commande nécessite un produit et une quantité"), 422
 
     # check if product exists
     product = Product.get_or_none(Product.id == product_id)
@@ -122,14 +126,6 @@ def post_order():
 
 @app.route('/order/<int:order_id>', methods=['GET', 'PUT'])
 def order_id_handler(order_id):
-    def calculate_shipping_price(weight):
-        if weight < 500:
-            return 5
-        elif weight < 2000:
-            return 10
-        else:
-            return 25
-
     def get_order():
         # Check if order exists
         order = Order.get_or_none(Order.id == order_id)
@@ -190,7 +186,7 @@ def order_id_handler(order_id):
                 raise ValueError
             shipping_info = data["shipping_information"]
             if not all(key in shipping_info for key in ("address", "city", "province", "postal_code", "country")):
-                return errors.error_handler("order", "missing-fields", "Il manque des champs dans le json"), 422
+                raise ValueError
 
                 # Check if shipping info exists
             if order.shipping_info:
@@ -204,11 +200,15 @@ def order_id_handler(order_id):
                     order.shipping_info = shipping_info_instance
                 except peewee.IntegrityError:
                     return errors.error_handler("orders", "invalid-fields",
-                                                "Les informations d'achat ne sont pas correctes"), 400
+                                                "Les informations d'achat ne sont pas correctes"), 422
 
             # Update order email and save
             order.email = data["email"]
-            order.save()
+            try:
+                order.save()
+            except peewee.IntegrityError:
+                return errors.error_handler("orders", "invalid-fields",
+                                            "Les informations d'achat ne sont pas correctes"), 422
 
             return get_order()
 
@@ -233,18 +233,6 @@ def order_id_handler(order_id):
                 return errors.error_handler("order", "unknown-error", "contactez l'administrateur du site"), 418  # :)
                 # please don't remove this
 
-            # add credit card to order
-            try:
-                credit_card = CreditCard.create(name=data["name"], first_digits=data["number"][:4],
-                                                last_digits=data["number"][-4:],
-                                                expiration_year=data["expiration_year"],
-                                                expiration_month=data["expiration_month"])
-                order.credit_card = credit_card
-                order.save()
-            except peewee.IntegrityError:
-                return errors.error_handler("credit-card", "invalid-fields",
-                                            "Les informations de la carte de crédit ne sont pas correctes"), 400
-
             pay_payload = {
                 "credit_card": {**data},
                 "amount_charged": order_product.product.price * order_product.quantity + calculate_shipping_price(
@@ -263,6 +251,18 @@ def order_id_handler(order_id):
             else:
                 return response.json(), response.status_code
 
+                # add credit card to order
+            try:
+                credit_card = CreditCard.create(name=data["name"], first_digits=data["number"][:4],
+                                                last_digits=data["number"][-4:],
+                                                expiration_year=data["expiration_year"],
+                                                expiration_month=data["expiration_month"])
+                order.credit_card = credit_card
+                order.save()
+            except peewee.IntegrityError:
+                return errors.error_handler("credit-card", "invalid-fields",
+                                            "Les informations de la carte de crédit ne sont pas correctes"), 400
+
             return get_order()
 
         # Check if order exists
@@ -278,6 +278,8 @@ def order_id_handler(order_id):
                 return update_shipping_order(payload["order"])
             elif "credit_card" in payload:
                 return update_credit_card(payload["credit_card"])
+            else:
+                return errors.error_handler("order", "missing-fields", "Il manque des champs dans le json"), 422
         except (json.JSONDecodeError, ValueError):
             return errors.error_handler("order", "json-not-valid", "Le json n'est pas au bon format"), 422
 
@@ -287,13 +289,23 @@ def order_id_handler(order_id):
         return put_order()
 
 
-def populate_database():
+def calculate_shipping_price(weight):
+    if weight < 500:
+        return 5
+    elif weight < 2000:
+        return 10
+    else:
+        return 25
+
+
+def populate_database(debug=False):
     # create products from url and add to database (only if database is empty)
     if Product.select().count() == 0:
         response = requests.get('http://dimprojetu.uqac.ca/~jgnault/shops/products/')
         products = json.loads(response.content)
         for product in products["products"]:
-            print("Adding product: " + product["name"])
+            if debug:
+                print("Adding product: " + product["name"])
             product = dict_to_model(Product, product)
             # loops through all the fields in the model and sets them to the values in the dict
             try:
@@ -309,6 +321,11 @@ def init_db():
     db.drop_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     db.create_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     populate_database()
+
+
+def delete_db():
+    db.drop_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
+    db.close()
 
 
 if __name__ == "__main__":
