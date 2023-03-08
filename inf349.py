@@ -50,10 +50,12 @@ class Transaction(BaseModel):
 class CreditCard(BaseModel):
     id = peewee.IntegerField(primary_key=True, unique=True)
     name = peewee.CharField(max_length=255, null=False)
-    card_number = peewee.CharField(max_length=16, null=False,
-                                   constraints=[peewee.Check('card_number LIKE "____ ____ ____ ____"')])
-    expiration_date = peewee.DateField(null=False)
-    cvv = peewee.CharField(max_length=3, null=False, constraints=[peewee.Check('cvv LIKE "___"')])
+    first_4_digits = peewee.CharField(max_length=4, null=False,
+                                      constraints=[peewee.Check('first_4_digits LIKE "____"')])
+    last_4_digits = peewee.CharField(max_length=4, null=False, constraints=[peewee.Check('last_4_digits LIKE "____"')])
+    expiration_month = peewee.IntegerField(null=False, constraints=[peewee.Check('expiration_month >= 1 AND '
+                                                                                 'expiration_month <= 12')])
+    expiration_year = peewee.IntegerField(null=False)
 
 
 class Order(BaseModel):
@@ -157,21 +159,21 @@ def order_id_handler(order_id):
         # Get shipping info from order.shipping_info_id
         shipping_info = {}
         if order.shipping_info:
-            shipping_info = model_to_dict(ShippingInfo.get_or_none(order.shipping_info.id))
+            shipping_info = model_to_dict(ShippingInfo.get_or_none(order.shipping_info))
 
         order_dict["shipping_info"] = shipping_info
 
         # Get credit card from order.credit_card_id
         credit_card = {}
         if order.credit_card:
-            credit_card = model_to_dict(CreditCard.get_or_none(order.credit_card.id))
+            credit_card = model_to_dict(CreditCard.get_or_none(order.credit_card))
 
         order_dict["credit_card"] = credit_card
 
         # Get transaction from order.transaction_id
         transaction = {}
         if order.transaction:
-            transaction = model_to_dict(Transaction.get_or_none(order.transaction.id))
+            transaction = model_to_dict(Transaction.get_or_none(Transaction.id == order.transaction.id))
 
         order_dict["transaction"] = transaction
 
@@ -227,6 +229,18 @@ def order_id_handler(order_id):
                 return errors.error_handler("order", "unknown-error", "contactez l'administrateur du site"), 418  # :)
                 # please don't remove this
 
+            # add credit card to order
+            try:
+                credit_card = CreditCard.create(name=data["name"], first_4_digits=data["number"][:4],
+                                                last_4_digits=data["number"][-4:],
+                                                expiration_year=data["expiration_year"],
+                                                expiration_month=data["expiration_month"])
+                order.credit_card = credit_card
+                order.save()
+            except peewee.IntegrityError:
+                return errors.error_handler("credit-card", "invalid-fields",
+                                            "Les informations de la carte de crédit ne sont pas correctes"), 400
+
             pay_payload = {
                 "credit_card": {**data},
                 "amount_charged": order_product.product.price * order_product.quantity + calculate_shipping_price(
@@ -239,6 +253,9 @@ def order_id_handler(order_id):
             if response.status_code == 200:
                 # Create transaction
                 transaction = Transaction.create(**response.json()["transaction"])
+                print(transaction)
+                print("____________________________________________________")
+                print(response.json()["transaction"])
                 order.transaction = transaction
                 order.paid = True
                 order.save()
