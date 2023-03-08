@@ -86,33 +86,30 @@ def post_order():
     except json.JSONDecodeError:
         return errors.error_handler("order", "json-not-valid", "Le json n\'est pas au bon format"), 422
 
-    if payload is None:
+    if not payload:
         return errors.error_handler("products", "missing-fields",
-                                    "La creation d'une commande necessite un produit"), 422
+                                    "La création d'une commande nécessite un produit"), 422
+
+    product_id = payload.get('id')
+    quantity = payload.get('quantity')
 
     # check if product exists
-    if Product.select().where(Product.id == payload["id"]).count() == 0:
-        return errors.error_handler("order", "product-does-not-exist", "Le produit n\'existe pas"), 404
+    product = Product.get_or_none(Product.id == product_id)
+    if not product:
+        return errors.error_handler("order", "product-does-not-exist", "Le produit n'existe pas"), 404
 
     # check if product is in stock
-    if Product.select().where(Product.id == payload["id"], Product.in_stock).count() == 0:
+    if not product.in_stock:
         return errors.error_handler("products", "out-of-inventory", "Le produit demandé n'est pas en inventaire"), 422
 
     # check if quantity is valid
-    if payload["quantity"] < 1:
+    if quantity < 1:
         return errors.error_handler("order", "invalid-quantity", "La quantité ne peut pas être inférieure à 1"), 422
-
-    product: Product = Product.get(Product.id == payload["id"])
 
     # create order
     try:
-        new_order = Order.create(product_id=payload["id"], total_price=product.price * payload["quantity"])
-    except peewee.IntegrityError as e:
-        print(e)
-        return errors.error_handler("order", "invalid-fields", "Les champs sont mal remplis"), 422
-
-    try:
-        OrderProduct.create(order_id=new_order.id, product_id=payload["id"], quantity=payload["quantity"])
+        new_order = Order.create(product_id=product_id)
+        OrderProduct.create(order_id=new_order.id, product_id=product_id, quantity=quantity)
     except peewee.IntegrityError as e:
         print(e)
         return errors.error_handler("order", "invalid-fields", "Les champs sont mal remplis"), 422
@@ -133,17 +130,15 @@ def order_id_handler(order_id):
 
     def get_order():
         # Check if order exists
-        try:
-            order = Order.get_by_id(order_id)
-        except Order.DoesNotExist:
+        order = Order.get_or_none(Order.id == order_id)
+        if not order:
             return errors.error_handler("order", "order-does-not-exist", "L'order n'existe pas"), 404
 
         # Get order info
         order_dict = model_to_dict(order)
 
         # Get product info from order.product_id
-        order_product = OrderProduct.select(OrderProduct.product, OrderProduct.quantity).where(
-            OrderProduct.order == order).get()
+        order_product = OrderProduct.get(OrderProduct.order_id == order.id)
 
         # Add product info to order
         order_dict["product"] = {
@@ -160,22 +155,25 @@ def order_id_handler(order_id):
         order_dict["shipping_price"] = calculate_shipping_price(weight)
 
         # Get shipping info from order.shipping_info_id
-        try:
-            order_dict["shipping_info"] = model_to_dict(ShippingInfo.get_by_id(order.shipping_info.id))
-        except (ShippingInfo.DoesNotExist, AttributeError):
-            order_dict["shipping_info"] = {}
+        shipping_info = {}
+        if order.shipping_info:
+            shipping_info = model_to_dict(ShippingInfo.get_or_none(order.shipping_info.id))
+
+        order_dict["shipping_info"] = shipping_info
 
         # Get credit card from order.credit_card_id
-        try:
-            order_dict["credit_card"] = model_to_dict(CreditCard.get_by_id(order.credit_card.id))
-        except (CreditCard.DoesNotExist, AttributeError):
-            order_dict["credit_card"] = {}
+        credit_card = {}
+        if order.credit_card:
+            credit_card = model_to_dict(CreditCard.get_or_none(order.credit_card.id))
+
+        order_dict["credit_card"] = credit_card
 
         # Get transaction from order.transaction_id
-        try:
-            order_dict["transaction"] = model_to_dict(Transaction.get_by_id(order.transaction.id))
-        except (Transaction.DoesNotExist, AttributeError):
-            order_dict["transaction"] = {}
+        transaction = {}
+        if order.transaction:
+            transaction = model_to_dict(Transaction.get_or_none(order.transaction.id))
+
+        order_dict["transaction"] = transaction
 
         return jsonify({"order": order_dict})
 
@@ -187,18 +185,20 @@ def order_id_handler(order_id):
             shipping_info = data["shipping_information"]
             if not all(key in shipping_info for key in ("address", "city", "province", "postal_code", "country")):
                 return errors.error_handler("order", "missing-fields", "Il manque des champs dans le json"), 422
-            try:
+
                 # Check if shipping info exists
-                shipping_info_instance = ShippingInfo.get(ShippingInfo.id == order.shipping_info.id)
+            if order.shipping_info:
+                # Update shipping info instance
+                shipping_info_instance = ShippingInfo.get_or_none(ShippingInfo.id == order.shipping_info.id)
                 shipping_info_instance.update(**shipping_info).execute()
-            except (ShippingInfo.DoesNotExist, AttributeError):
+            else:
                 # Create new shipping info instance
-                shipping_info_instance = ShippingInfo.create(**shipping_info)
-                order.shipping_info = shipping_info_instance.id
-            except peewee.IntegrityError as e:
-                print(e)
-                return errors.error_handler("orders", "invalid-fields",
-                                            "Les informations d'achat ne sont pas correctes"), 400
+                try:
+                    shipping_info_instance = ShippingInfo.create(**shipping_info)
+                    order.shipping_info = shipping_info_instance.id
+                except peewee.IntegrityError:
+                    return errors.error_handler("orders", "invalid-fields",
+                                                "Les informations d'achat ne sont pas correctes"), 400
 
             # Update order email and save
             order.email = data["email"]
@@ -221,10 +221,11 @@ def order_id_handler(order_id):
             if not (data["number"] == "4000 0000 0000 0002" or data["number"] == "4242 4242 4242 4242"):
                 return errors.error_handler("credit-card", "incorrect-number", "Le numéro de carte est invalide"), 422
 
-            try:
-                order_product = OrderProduct.get(OrderProduct.order == order)
-            except OrderProduct.DoesNotExist:
-                return errors.error_handler("order", "order-does-not-exist", "L'order n'existe pas"), 404
+            order_product = OrderProduct.get_or_none(OrderProduct.order == order)
+
+            if not order_product:
+                return errors.error_handler("order", "unknown-error", "contactez l'administrateur du site"), 418  # :)
+                # please don't remove this
 
             pay_payload = {
                 "credit_card": {**data},
@@ -246,10 +247,10 @@ def order_id_handler(order_id):
 
             return get_order()
 
-        try:
-            # Check if order exists
-            order = Order.get(Order.id == order_id)
-        except Order.DoesNotExist:
+        # Check if order exists
+        order = Order.get_or_none(Order.id == order_id)
+
+        if not order:
             return errors.error_handler("order", "order-not-found", "L'order n'existe pas"), 404
 
         try:
