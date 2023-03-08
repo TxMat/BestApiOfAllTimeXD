@@ -50,9 +50,9 @@ class Transaction(BaseModel):
 class CreditCard(BaseModel):
     id = peewee.IntegerField(primary_key=True, unique=True)
     name = peewee.CharField(max_length=255, null=False)
-    first_4_digits = peewee.CharField(max_length=4, null=False,
-                                      constraints=[peewee.Check('first_4_digits LIKE "____"')])
-    last_4_digits = peewee.CharField(max_length=4, null=False, constraints=[peewee.Check('last_4_digits LIKE "____"')])
+    first_digits = peewee.CharField(max_length=4, null=False,
+                                    constraints=[peewee.Check('first_digits LIKE "____"')])
+    last_digits = peewee.CharField(max_length=4, null=False, constraints=[peewee.Check('last_digits LIKE "____"')])
     expiration_month = peewee.IntegerField(null=False, constraints=[peewee.Check('expiration_month >= 1 AND '
                                                                                  'expiration_month <= 12')])
     expiration_year = peewee.IntegerField(null=False)
@@ -160,6 +160,8 @@ def order_id_handler(order_id):
         shipping_info = {}
         if order.shipping_info:
             shipping_info = model_to_dict(ShippingInfo.get_or_none(order.shipping_info))
+            # no need to send id to client
+            del shipping_info["id"]
 
         order_dict["shipping_info"] = shipping_info
 
@@ -167,6 +169,8 @@ def order_id_handler(order_id):
         credit_card = {}
         if order.credit_card:
             credit_card = model_to_dict(CreditCard.get_or_none(order.credit_card))
+            # no need to send id to client
+            del credit_card["id"]
 
         order_dict["credit_card"] = credit_card
 
@@ -231,8 +235,8 @@ def order_id_handler(order_id):
 
             # add credit card to order
             try:
-                credit_card = CreditCard.create(name=data["name"], first_4_digits=data["number"][:4],
-                                                last_4_digits=data["number"][-4:],
+                credit_card = CreditCard.create(name=data["name"], first_digits=data["number"][:4],
+                                                last_digits=data["number"][-4:],
                                                 expiration_year=data["expiration_year"],
                                                 expiration_month=data["expiration_month"])
                 order.credit_card = credit_card
@@ -253,9 +257,6 @@ def order_id_handler(order_id):
             if response.status_code == 200:
                 # Create transaction
                 transaction = Transaction.create(**response.json()["transaction"])
-                print(transaction)
-                print("____________________________________________________")
-                print(response.json()["transaction"])
                 order.transaction = transaction
                 order.paid = True
                 order.save()
