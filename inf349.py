@@ -195,7 +195,7 @@ def order_id_handler(order_id):
                 # Create new shipping info instance
                 try:
                     shipping_info_instance = ShippingInfo.create(**shipping_info)
-                    order.shipping_info = shipping_info_instance.id
+                    order.shipping_info = shipping_info_instance
                 except peewee.IntegrityError:
                     return errors.error_handler("orders", "invalid-fields",
                                                 "Les informations d'achat ne sont pas correctes"), 400
@@ -239,7 +239,7 @@ def order_id_handler(order_id):
             if response.status_code == 200:
                 # Create transaction
                 transaction = Transaction.create(**response.json()["transaction"])
-                order.transaction = transaction.id
+                order.transaction = transaction
                 order.paid = True
                 order.save()
             else:
@@ -291,3 +291,8 @@ def init_db():
     db.drop_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     db.create_tables([Product, ShippingInfo, Transaction, CreditCard, Order, OrderProduct])
     populate_database()
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run()
